@@ -1,11 +1,9 @@
 #!/usr/bin/env python
 
-import logging
 import re
 
 import slacker
 from slacksocket import SlackSocket
-from collections import OrderedDict
 
 from slack_objects import Message, Response
 from game_objects import Card, CardDeck, CardPile, color_deck
@@ -13,8 +11,6 @@ from slack_token import SLACK_TOKEN, BOT_USER_ID
 
 POST_CHANNEL = '#test-channel'
 slack = slacker.Slacker(SLACK_TOKEN)
-
-## Cards and card collections
 
 ## Game Logic
 
@@ -128,7 +124,6 @@ class SlackInterface:
         self.im_channels = set()
         self.awake = False
 
-
     def _parse_message(self, e):
         if e.type not in ('message',):
             raise ValueError("event.type != message; type is {}".format(e.type))
@@ -169,7 +164,6 @@ class SlackInterface:
         # Is this an IM channel?
         if chan_id in [im['id'] for im in self.slack.im.list().body['ims']]:
             self.im_channels.add(chan_id)
-            channel_name = self.FAKE_PM_CHANNEL_NAME
             is_im = True
             return self.FAKE_PM_CHANNEL_NAME, is_im
 
@@ -195,7 +189,6 @@ class SlackInterface:
         self.slack.chat.post_message(channel, message, as_user=True)
 
     def listen(self):
-        s = self
         for e in self.socket.events():
 
             # Convert socket event to Message object, if possible.
@@ -209,18 +202,16 @@ class SlackInterface:
 
             # TODO: Implement 'select a game to play' functionality.
 
-            # if msg.im: self._echo(msg)
-            # continue
-
-            # TODO:
             response = self.responder.respond_to_message(msg)
-            if response:
-                self._write_to_channel(response.chan_id, response.text)
+            if not response:
+                continue
+            if not isinstance(response, (set, list, tuple)):
+                response = [response]
+            self._write_to_channel(response.chan_id, response.text)
 
 
 def main():
     si = SlackInterface(card_game)
-
     si.listen()
 
 if __name__ == '__main__':
