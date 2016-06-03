@@ -51,3 +51,9 @@ class Message(object):
             "chan_id={3}, chan_name={4}, im={5}").format(
             self.text, self.user_id,self.user_name,
             self.chan_id, self.chan_name, self.im)
+
+class Response(object):
+
+    def __init__(self, text=None, chan_id=None):
+        self.text = text
+        self.chan_id = chan_id

@@ -7,19 +7,14 @@ import slacker
 from slacksocket import SlackSocket
 from collections import OrderedDict
 
-from slack_objects import Message
-from game_objects import Card, CardDeck, CardPile
+from slack_objects import Message, Response
+from game_objects import Card, CardDeck, CardPile, color_deck
+from slack_token import SLACK_TOKEN, BOT_USER_ID
 
 POST_CHANNEL = '#test-channel'
-SLACK_TOKEN = "xoxb-41370365543-eyugiTyl6kqbjO91WVEo5d0S"
-BOT_USER_ID = u"U17AWARFZ"
 slack = slacker.Slacker(SLACK_TOKEN)
 
 ## Cards and card collections
-color_deck = CardDeck([Card(name=name) for name in
-    ('Red','Orange','Yellow','Green','Blue','Indigo','Violet')], name='ColorDeck')
-hand_1 = CardPile(name='hand_1')
-hand_2 = CardPile(name='hand_2')
 
 ## Game Logic
 
@@ -32,49 +27,43 @@ class RegexResponder(object):
         # state, and test regex's until we get one that matches. Use the
         # response_method to calculate the return value.
         response_method = None
+        print "Text: {}".format(msg.text)
         for reg_ex_obj, method_name in self.REGEX_METHOD_BY_STATE[self._state]:
+            print "Testing {}...".format(reg_ex_obj.pattern)
             match_obj = reg_ex_obj.match(msg.text)
             if match_obj:
+                print "Matched;",str(match_obj)
                 response_method = getattr(self,method_name)
                 break
 
         # If we don't find a match, no response.
         if not response_method:
+            print "No match."
             return
 
         return response_method(match=match_obj, msg=msg)
 
-class Game(object):
+class CardGame(RegexResponder):
 
-    # Games have players!
-    @property
-    def players(self):
-        "Return a read-only view on the player IDs."
-        return frozenset(self._players)
-    def add_player(self, player):
-        raise NotImplementedError
-    def remove_player(self, player):
-        raise NotImplementedError
-    def player_status(self, player):
-        raise NotImplementedError
-
-class CardGame(Game):
-
-    STATE_ASLEEP = 0
-    STATE_AWAKE = 1
+    ASLEEP = 0
+    AWAKE = 1
 
     REGEX_METHOD_BY_STATE = {
         ASLEEP:(
-            (re.compile(r'<@{0}> wake up'.format(BOT_USER_ID)),
+            (re.compile(r'.*<@{0}>.+wake.*'.format(BOT_USER_ID)),
              '_wake_up'),
             ),
         AWAKE:(
+            (re.compile(r'.*<@{0}>.+sleep.*'.format(BOT_USER_ID)),
+             '_sleep'),
             (re.compile(r'.*'),
              '_echo'),
             ) }
 
     def __init__(self, decks=None, hands=None):
         # The deck or decks are the cards in play at the beginning of the game.
+        self._players = set()
+
         if isinstance(decks, CardDeck):
             decks = [decks]
         else:
@@ -92,17 +81,29 @@ class CardGame(Game):
         self._state = self.ASLEEP
         self._game_channel = None
 
-    def _wake_up(match=None, msg=None):
-        raise NotImplementedError
+    def _wake_up(self, match=None, msg=None):
+        print "WAKE UP"
+        self._state = self.AWAKE
+        return Response(
+            text="...I'm awake, jeez!",
+            chan_id=msg.chan_id)
 
-    def _echo(match=None, msg=None):
-        raise NotImplementedError
+    def _echo(self, match=None, msg=None):
+        if not msg.im:
+            print "ECHOING"
+            return Response(text=msg.text, chan_id=msg.chan_id)
+        else:
+            print "NO ECHO"
+            return None
+
+    def _sleep(self, match=None, msg=None):
+        print "NAPPING"
+        self._state = self.ASLEEP
+        return Response(text="Yawn... zzz", chan_id=msg.chan_id)
 
 card_game = CardGame(decks=color_deck)
 
 ## The Slack Listener
-
-import ipdb; ipdb.set_trace()
 
 class SlackInterface:
 
@@ -113,10 +114,11 @@ class SlackInterface:
 
     POST_CHANNEL = '#test-channel'
     FAKE_PM_CHANNEL_NAME = '___private_message___'
-    SLACK_TOKEN = "xoxb-41370365543-eyugiTyl6kqbjO91WVEo5d0S"
-    BOT_USER_ID = u"U17AWARFZ"
 
-    def __init__(self):
+    def __init__(self, responder=None):
+        assert isinstance(responder, RegexResponder)
+        self.responder = responder
+
         self.slack = slacker.Slacker(SLACK_TOKEN)
         self.socket = SlackSocket(SLACK_TOKEN, translate=False)
         self.user_to_id = {}
@@ -125,7 +127,7 @@ class SlackInterface:
         self.id_to_channel = {}
         self.im_channels = set()
         self.awake = False
-        self.game = CardGame(decks=color_deck)
+
 
     def _parse_message(self, e):
         if e.type not in ('message',):
@@ -144,20 +146,20 @@ class SlackInterface:
             chan_name=channel_name,
             im=is_im)
 
-    def _get_channel_name_and_type(self, channel_id):
+    def _get_channel_name_and_type(self, chan_id):
         # Check caches.
-        if channel_id in self.id_to_channel:
+        if chan_id in self.id_to_channel:
             is_im = False
-            return self.id_to_channel[channel_id], is_im
-        elif channel_id in self.im_channels:
+            return self.id_to_channel[chan_id], is_im
+        elif chan_id in self.im_channels:
             is_im = True
             return self.FAKE_PM_CHANNEL_NAME, is_im
 
         # Is this a public or private channel?
         try:
-            channel_name = self.slack.channels.info(channel_id)
+            channel_name = self.slack.channels.info(chan_id)
             channel_name = channel_name.body['channel']['name']
-            self.id_to_channel[channel_id] = channel_name
+            self.id_to_channel[chan_id] = channel_name
             is_im = False
             return channel_name, is_im
         except slacker.Error, e:
@@ -165,13 +167,13 @@ class SlackInterface:
                 raise
 
         # Is this an IM channel?
-        if channel_id in [im['id'] for im in self.slack.im.list().body['ims']]:
-            self.im_channels.add(channel_id)
+        if chan_id in [im['id'] for im in self.slack.im.list().body['ims']]:
+            self.im_channels.add(chan_id)
             channel_name = self.FAKE_PM_CHANNEL_NAME
             is_im = True
             return self.FAKE_PM_CHANNEL_NAME, is_im
 
-        raise ValueError, "Channel {} is neither chat channel nor IM channel".format(channel_id)
+        raise ValueError, "Channel {} is neither chat nor IM.".format(chan_id)
 
     def _get_user_name(self, user_id):
         if user_id in self.id_to_user:
@@ -207,51 +209,18 @@ class SlackInterface:
 
             # TODO: Implement 'select a game to play' functionality.
 
-            if msg.im: self._echo(msg)
-            continue
+            # if msg.im: self._echo(msg)
+            # continue
 
             # TODO:
-            response = self.game.respond_to_message(msg)
-            continue
-            ## DEBUG LOOP
-
-            if _filter_event(e):
-                print _filter_event(e)
-                continue
-            if e.type not in ('message',):
-                print "event.type != message; type is {}".format(e.type)
-                continue
-            if e.event['user'] == BOT_USER_ID:
-                print "event.event['user'] == BOT_USER_ID"
-                continue
-
-            text = e.event['text']
-            if ('<@%s>'%BOT_USER_ID) not in text:
-                print "('<@%s>'%BOT_USER_ID) not in text - continue"
-                continue
-
-            try:
-                channel_name = get_channel_name(event.event['channel'])
-                user_name = get_user_name(event.event['user'])
-            except:
-                print "Couldn't get channel name and/or user name."
-                import ipdb; ipdb.set_trace()
-                continue
-
-            print (channel_name, user_name, text)
-
-            if 'debug' in text:
-                import ipdb
-                ipdb.set_trace()
-            elif 'puppy' in text:
-                notify_slack(channel_name, 'dog joke placeholder')
-            elif re.search('roll (\d+)', text):
-                m = re.search('roll (\d+)', text)
-                roll_dice(channel_name, int(m.group(1)))
+            response = self.responder.respond_to_message(msg)
+            if response:
+                self._write_to_channel(response.chan_id, response.text)
 
 
 def main():
-    si = SlackInterface()
+    si = SlackInterface(card_game)
+
     si.listen()
 
 if __name__ == '__main__':
