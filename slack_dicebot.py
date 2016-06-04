@@ -12,10 +12,30 @@ from slack_token import SLACK_TOKEN, BOT_USER_ID
 POST_CHANNEL = '#test-channel'
 slack = slacker.Slacker(SLACK_TOKEN)
 
+## Reg-Ex compiler help-function.
+
+def re_comp(pattern):
+    pattern = pattern.format(BOT_USER_ID=("<@"+BOT_USER_ID+">"))
+    return re.compile(pattern, flags=re.IGNORECASE)
+
 ## Game Logic
 
 class RegexResponder(object):
     "An abstract class that defines the basic call-response loop."
+
+    REGEX_METHOD_BY_STATE = None
+
+    def __init__(self):
+        assert hasattr(self,'REGEX_METHOD_BY_STATE'), "No REGEX_METHOD_BY_STATE for a regex responder?"
+        assert isinstance(self.REGEX_METHOD_BY_STATE, dict)
+        for value in self.REGEX_METHOD_BY_STATE.itervalues():
+            assert type(value) == type(())
+            for regex_method in value:
+                assert len(regex_method) == 2
+                regexobj, method_name = regex_method
+                assert isinstance(regexobj, re._pattern_type)
+                assert isinstance(method_name, basestring)
+                assert hasattr(self, method_name)
 
     def respond_to_message(self, msg):
         "Get message, adjust internal state, and reply with a message."
@@ -41,22 +61,37 @@ class RegexResponder(object):
 
 class CardGame(RegexResponder):
 
+    # Game States.
     ASLEEP = 0
-    AWAKE = 1
+    ACCEPTING_PLAYERS = 1
+    ACTIVE_GAME = 2
 
     REGEX_METHOD_BY_STATE = {
         ASLEEP:(
-            (re.compile(r'.*<@{0}>.+wake.*'.format(BOT_USER_ID)),
+            (re_comp(r'.*{BOT_USER_ID}.+wake.*'),
              '_wake_up'),
             ),
-        AWAKE:(
-            (re.compile(r'.*<@{0}>.+sleep.*'.format(BOT_USER_ID)),
-             '_sleep'),
-            (re.compile(r'.*'),
-             '_echo'),
-            ) }
+        ACCEPTING_PLAYERS:(
+            # Go back to sleep.
+            (re_comp(r'.*{BOT_USER_ID}.+sleep.*'),
+             '_back_to_sleep'),
+            # TODO: Add me as a player.
+            # TODO: Remove me as a player.
+            # TODO: Who is playing?
+            # TODO: What are we playing?
+            # TODO: Start playing.
+            ),
+        ACTIVE_GAME:(
+            # TODO: Back to sleep.
+            (re_comp(r'.*{BOT_USER_ID}.+sleep.*'),
+             '_back_to_sleep'),
+            # TODO: What is in my hand?
+            # TODO: Deal {person} {num_cards} cards.
+        )}
 
     def __init__(self, decks=None, hands=None):
+        super(CardGame, self).__init__()
+
         # The deck or decks are the cards in play at the beginning of the game.
         self._players = set()
 
@@ -78,21 +113,15 @@ class CardGame(RegexResponder):
         self._game_channel = None
 
     def _wake_up(self, match=None, msg=None):
+        print match
         print "WAKE UP"
-        self._state = self.AWAKE
+        self._state = self.ACCEPTING_PLAYERS
         return Response(
             text="...I'm awake, jeez!",
             chan_id=msg.chan_id)
 
-    def _echo(self, match=None, msg=None):
-        if not msg.im:
-            print "ECHOING"
-            return Response(text=msg.text, chan_id=msg.chan_id)
-        else:
-            print "NO ECHO"
-            return None
-
-    def _sleep(self, match=None, msg=None):
+    def _back_to_sleep(self, match=None, msg=None):
+        print match
         print "NAPPING"
         self._state = self.ASLEEP
         return Response(text="Yawn... zzz", chan_id=msg.chan_id)
@@ -184,8 +213,9 @@ class SlackInterface:
         self._write_to_channel(msg.chan_id,msg.text)
         pass
 
-    def _write_to_channel(self, channel, message):
-        message = message.replace("@channel", "<!channel|@channel>")
+    def _write_to_channel(self, response):
+        message = response.text.replace("@channel", "<!channel|@channel>")
+        channel = response.chan_id
         self.slack.chat.post_message(channel, message, as_user=True)
 
     def listen(self):
@@ -202,12 +232,13 @@ class SlackInterface:
 
             # TODO: Implement 'select a game to play' functionality.
 
-            response = self.responder.respond_to_message(msg)
-            if not response:
+            responses = self.responder.respond_to_message(msg)
+            if not responses:
                 continue
-            if not isinstance(response, (set, list, tuple)):
-                response = [response]
-            self._write_to_channel(response.chan_id, response.text)
+            if not isinstance(responses, (set, list, tuple)):
+                responses = [responses]
+            for response in responses:
+                self._write_to_channel(response)
 
 
 def main():
