@@ -54,7 +54,7 @@ class Message(object):
 
 class Response(object):
 
-    def __init__(self, text=None, chan_id=None, im=False):
+    def __init__(self, text=None, chan_id=None, im=None):
         self.text = text
         self.chan_id = chan_id
         self.im = im

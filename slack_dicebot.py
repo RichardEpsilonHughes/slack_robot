@@ -84,6 +84,8 @@ class CardGame(RegexResponder):
             # Help?
             (re_comp(r'{BOT_USER_ID}\s.*help'),
              '_help'),
+
+            ## PLAYER MANAGEMENT
             # Add me as a player.
             (re_comp(r'{BOT_USER_ID}\s+join'),
              '_add_player'),
@@ -93,38 +95,57 @@ class CardGame(RegexResponder):
             # Who is playing?
             (re_comp(r'{BOT_USER_ID}\s+list'),
              '_list_players'),
+
+
             # Start playing.
             (re_comp(r'{BOT_USER_ID}\s+begin\s+game'),
              '_begin_game'),
+            (re_comp(r'{BOT_USER_ID}'),
+             '_grumble'),
             ),
         ACTIVE_GAME:(
             # Back to sleep.
             (re_comp(r'{BOT_USER_ID}.+sleep'),
              '_back_to_sleep'),
-            # TODO: What is in my hand?
+            # Help?
+            (re_comp(r'{BOT_USER_ID}\s.*help'),
+             '_help'),
+            # Who is playing?
+            (re_comp(r'{BOT_USER_ID}\s+list'),
+             '_list_players'),
+            ## HAND MANAGEMENT
+            # TODO: What is in my hand? Or, uh, someone else's hand?
+            (re_comp(r'{BOT_USER_ID}\s+check\s+hand\s*(?P<player_name>@?[\w.]*)'),
+             '_check_hand'),
+            # TODO: Return this card to the deck.
+            (re_comp(r'{BOT_USER_ID}\s+return\s+card\s*(?P<card_name>[\s\w]*)'),
+             '_return_card'),
+            ## DECK MANAGEMENT
+            # TODO: Shuffle!
+            (re_comp(r'{BOT_USER_ID}\s+shuffle'),
+             '_shuffle_deck'),
+            # TODO: How many cards are in the deck? Or, lemme see the top X cards.
+            (re_comp(r'{BOT_USER_ID}\s+check\s+deck\s*(?P<peek_depth>\d*)'),
+             '_check_deck'),
             # TODO: Deal {person} {num_cards} cards.
+            (re_comp('\s+deal\s+(?P<num_cards>\d+)\s+to\s(?P<player_name>@?[\w.]+)'),
+             '_deal_cards'),
+            (re_comp(r'{BOT_USER_ID}'),
+             '_grumble'),
         )}
 
-    def __init__(self, decks=None, hands=None):
+    def __init__(self, deck=None):
         super(CardGame, self).__init__()
 
         # The deck or decks are the cards in play at the beginning of the game.
         self._players = set()
 
-        if isinstance(decks, CardDeck):
-            decks = [decks]
-        else:
-            assert isinstance(decks,(tuple,set,list))
-            assert all(isinstance(d, CardDeck) for d in decks)
+        assert isinstance(deck, CardDeck)
 
-        # These are the 'hands' that each player will have.
-        if isinstance(hands, CardPile):
-            hands = [hands]
-        elif hands:
-            assert isinstance(hands,(tuple,set,list))
-            assert all(isinstance(h, CardPile) for h in hands)
-
+        self._deck = deck
         self._players = dict()
+        self._player_ids = dict()
+        self._hands = dict()
         self._state = self.ASLEEP
         self._game_chan_id = None
         self._game_chan_name = None
@@ -137,7 +158,12 @@ class CardGame(RegexResponder):
         raise SystemExit
 
     def _grumble(self, match=None, msg=None):
-        return Response(text="Gnr... zzz.... snr...",chan_id=msg.chan_id)
+        text = {
+            self.ASLEEP:"Gnr... zzz.... snr...",
+            self.ACCEPTING_PLAYERS:'Wot?',
+            self.ACTIVE_GAME:'Wot?',
+            }[self._state]
+        return Response(text=text,chan_id=msg.chan_id)
 
     def _wake_up(self, match=None, msg=None):
         print match
@@ -153,7 +179,6 @@ class CardGame(RegexResponder):
         print match
         interrupt = self._no_im(msg)
         if interrupt: return interrupt
-        print "NAPPING"
         self._state = self.ASLEEP
         self._game_chan_id = None
         self._game_chan_name = None
@@ -163,27 +188,36 @@ class CardGame(RegexResponder):
         if self._state == self.ACCEPTING_PLAYERS:
             text = u'\n'.join((
                 u'Card game is ready to start in #{CHANNEL} after players join:',
-                u' • `<@{BOT_USER_ID}> sleep`: Put <@{BOT_USER_ID}> back to sleep.',
-                u' • `<@{BOT_USER_ID}> join`: Join the game.',
-                u' • `<@{BOT_USER_ID}> leave`: Leave the game.',
-                u' • `<@{BOT_USER_ID}> list`: List the players in the game.',
-                u' • `<@{BOT_USER_ID}> begin game`: Start the game.',
-                u' • `<@{BOT_USER_ID}> help`: Play this message again.',
-            )).format(
-                BOT_USER_ID=BOT_USER_ID,
-                CHANNEL=self._game_chan_name,
-            )
-            return Response(text=text, chan_id=msg.chan_id)
-        return None
+                u' • `<@{B_U_ID}> sleep`: Put <@{B_U_ID}> back to sleep.',
+                u' • `<@{B_U_ID}> join`: Join the game.',
+                u' • `<@{B_U_ID}> leave`: Leave the game.',
+                u' • `<@{B_U_ID}> list`: List the players in the game.',
+                u' • `<@{B_U_ID}> begin game`: Start the game.',
+                u' • `<@{B_U_ID}> help`: Play this message again.', ))
+        elif self._state == self.ACTIVE_GAME:
+            text = u'\n'.join((
+                u'Card game is going down in #{CHANNEL}.:',
+                u' • `<@{B_U_ID}> sleep`: Put <@{B_U_ID}> back to sleep.',
+                u' • `<@{B_U_ID}> check hand [player]`: Look at someone\'s hand. Default is your hand.',
+                u' • `<@{B_U_ID}> return card [card name]`: Return a card in your hand to the bottom of the deck.',
+                u' • `<@{B_U_ID}> shuffle`: Shuffle the deck.',
+                u' • `<@{B_U_ID}> check deck`: Start the game.',
+                u' • `<@{B_U_ID}> deal [num_cards] to [player]`: Deal off the top of the deck.',
+            ))
+        text=text.format(B_U_ID=BOT_USER_ID, CHANNEL=self._game_chan_name)
+        return Response(text=text, chan_id=msg.chan_id)
 
     def _add_player(self, match=None, msg=None):
         assert self._game_chan_id
         player_id = msg.user_id
+        player_name = msg.user_name.lower()
         if player_id in self._players:
             return Response(text="You're already in this game.", chan_id=msg.chan_id)
-        self._players[player_id] = msg.user_name
+        self._players[player_id] = player_name
+        self._player_ids[player_name] = player_id
+        self._hands[player_id] = CardPile(name='Hand of {}'.format(player_name))
         responses = [Response(
-            text="<@{}> has joined the game.".format(msg.user_name), chan_id=self._game_chan_id)]
+            text="<@{}> has joined the game.".format(player_name), chan_id=self._game_chan_id)]
         if msg.im:
             responses.append(
                 # Private message.
@@ -193,11 +227,14 @@ class CardGame(RegexResponder):
     def _remove_player(self, match=None, msg=None):
         responses = []
         player_id = msg.user_id
+        player_name = msg.user_name.lower()
         if player_id not in self._players:
             return Response(text="You aren't a player, tho.", chan_id=msg.chan_id)
         del self._players[player_id]
+        del self._player_ids[player_name]
+        del self._hands[player_id]
         responses.append(Response(
-            text="<@{}> has left the game.".format(msg.user_name), chan_id=self._game_chan_id))
+            text="<@{}> has left the game.".format(player_name), chan_id=self._game_chan_id))
         if msg.im:
             responses.append(
                 # Private message.
@@ -210,13 +247,79 @@ class CardGame(RegexResponder):
         players = u'\n'.join(
             u' • <@{}>'.format(player_name)
             for player_name in self._players.itervalues())
+        print self._players.values()
         return Response(text=u"The players are:\n{}".format(players), chan_id=msg.chan_id)
 
     def _begin_game(self, match=None, msg=None):
         self._state=self.ACTIVE_GAME
-        return Response(text="WE GAMING NOW", chan_id=self._game_chan_id)
+        return self._help(msg=msg)
 
-card_game = CardGame(decks=color_deck)
+    def _check_hand(self, match=None, msg=None):
+        if msg.user_id not in self._players.keys():
+            print "PLAYERS ONLY"
+            return
+        player_name = match.group('player_name').lstrip('@ ')
+        if not player_name:
+            player_name = msg.user_name.lower()
+        elif player_name not in self._player_ids:
+            return Response(text="I don't recognize the player, '{}'.".format(player_name), chan_id=msg.chan_id)
+        player_id = self._player_ids[player_name]
+        hand = self._hands[player_id]
+        text = "{p} has the hand: {h}".format(p=player_name,h=hand)
+        return Response(text=text, chan_id=msg.chan_id)
+
+    def _return_card(self, match=None, msg=None):
+        if msg.user_id not in self._players.keys():
+            print "PLAYERS ONLY"
+            return
+        card_name = match.group('card_name').strip().lower()
+        key_fn = (lambda card:(str(card).lower().strip() == card_name))
+        pulled_card = self._hands[msg.user_id].pull(key_fn=key_fn)
+        if not pulled_card:
+            return Response(text="Ain't no card like that.", chan_id=msg.chan_id)
+        self._deck.insert(pulled_card,top=False)
+        return Response(text="Returned {card} to the bottom of the deck.".format(card=pulled_card), chan_id=msg.chan_id)
+
+    def _shuffle_deck(self, match=None, msg=None):
+        if msg.user_id not in self._players.keys():
+            print "PLAYERS ONLY"
+            return
+        self._deck.shuffle()
+        return Response(
+            text="`{player} shuffling deck`".format(player=msg.user_name.lower()),
+            chan_id=self._game_chan_id)
+
+    def _check_deck(self, match=None, msg=None):
+        if msg.user_id not in self._players.keys():
+            print "PLAYERS ONLY"
+            return
+        peek_depth = match.group('peek_depth').strip('')
+        try:
+            peek_depth = int(peek_depth)
+        except:
+            peek_depth = 0
+        if peek_depth:
+            peek = self._deck.peek(peek_depth)
+            return Response(text="Peekin' dis deck: {}".format(peek), chan_id=msg.chan_id)
+        else:
+            return Response(text="Deck has {} cards.".format(len(self._deck)), chan_id=msg.chan_id)
+
+    def _deal_cards(self, match=None, msg=None):
+        if msg.user_id not in self._players.keys():
+            print "PLAYERS ONLY"
+            return
+        player_name = match.group('player_name').lstrip('@')
+        if player_name not in self._player_ids:
+            return Response(text="I don't recognize the player, '{}'.".format(player_name), chan_id=msg.chan_id)
+        num_cards = int(match.group('num_cards'))
+        player_id = self._player_ids[player_name]
+        drawn_cards = self._deck.draw(num_cards)
+        self._hands[player_id].add(drawn_cards)
+        text="Player {p} drew cards: {c}".format(
+            p=player_name, c=drawn_cards)
+        return Response(text=text, chan_id=msg.chan_id)
+
+card_game = CardGame(deck=color_deck)
 
 ## The Slack Listener
 
