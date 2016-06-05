@@ -6,12 +6,11 @@ import re
 import slacker
 from slacksocket import SlackSocket
 
-from game_objects import CardDeck, CardPile, color_deck
+from game_objects import CardDeck, CardPile, deck_dict
 from slack_objects import Message, Response
 from slack_token import SLACK_TOKEN, BOT_USER_ID
 
 POST_CHANNEL = '#test-channel'
-slack = slacker.Slacker(SLACK_TOKEN)
 
 ## Reg-Ex compiler help-function.
 
@@ -114,20 +113,20 @@ class CardGame(RegexResponder):
             (re_comp(r'{BOT_USER_ID}\s+list'),
              '_list_players'),
             ## HAND MANAGEMENT
-            # TODO: What is in my hand? Or, uh, someone else's hand?
+            # What is in my hand? Or, uh, someone else's hand?
             (re_comp(r'{BOT_USER_ID}\s+check\s+hand\s*(?P<player_name>@?[\w.]*)'),
              '_check_hand'),
-            # TODO: Return this card to the deck.
+            # Return this card to the deck.
             (re_comp(r'{BOT_USER_ID}\s+return\s+card\s*(?P<card_name>[\s\w]*)'),
              '_return_card'),
             ## DECK MANAGEMENT
-            # TODO: Shuffle!
+            # Shuffle!
             (re_comp(r'{BOT_USER_ID}\s+shuffle'),
              '_shuffle_deck'),
-            # TODO: How many cards are in the deck? Or, lemme see the top X cards.
+            # How many cards are in the deck? Or, lemme see the top X cards.
             (re_comp(r'{BOT_USER_ID}\s+check\s+deck\s*(?P<peek_depth>\d*)'),
              '_check_deck'),
-            # TODO: Deal {person} {num_cards} cards.
+            # Deal {person} {num_cards} cards.
             (re_comp('\s+deal\s+(?P<num_cards>\d+)\s+to\s(?P<player_name>@?[\w.]+)'),
              '_deal_cards'),
             (re_comp(r'{BOT_USER_ID}'),
@@ -198,6 +197,7 @@ class CardGame(RegexResponder):
             text = u'\n'.join((
                 u'Card game is going down in #{CHANNEL}.:',
                 u' • `<@{B_U_ID}> sleep`: Put <@{B_U_ID}> back to sleep.',
+                u' • `<@{B_U_ID}> list`: List the players in the game.',
                 u' • `<@{B_U_ID}> check hand [player]`: Look at someone\'s hand. Default is your hand.',
                 u' • `<@{B_U_ID}> return card [card name]`: Return a card in your hand to the bottom of the deck.',
                 u' • `<@{B_U_ID}> shuffle`: Shuffle the deck.',
@@ -319,7 +319,7 @@ class CardGame(RegexResponder):
             p=player_name, c=drawn_cards)
         return Response(text=text, chan_id=msg.chan_id)
 
-card_game = CardGame(deck=color_deck)
+card_game = CardGame(deck=deck_dict['color_deck'])
 
 ## The Slack Listener
 
@@ -338,12 +338,21 @@ class SlackInterface:
 
         self.slack = slacker.Slacker(SLACK_TOKEN)
         self.socket = SlackSocket(SLACK_TOKEN, translate=False)
-        self.user_to_id = {}
-        self.id_to_user = {}
-        self.channel_to_id = {}
-        self.id_to_channel = {}
-        self.im_channels = set()
-        self.awake = False
+        self.user_id_to_user_name = {}
+        self.chan_id_to_chan_name = {}
+        self.user_id_to_im_chan_id = {}
+        self._update_cache()
+
+    def _update_cache(self):
+        self.user_id_to_user_name = {
+            u['id']:u['name']
+            for u in self.slack.users.list().body['members']}
+        self.chan_id_to_chan_name = {
+            c['id']:c['name']
+            for c in self.slack.channels.list().body['channels']}
+        self.user_id_to_im_chan_id = {
+            i['user']:i['id']
+            for i in self.slack.im.list().body['ims']}
 
     def _parse_message(self, e):
         if e.type not in ('message',):
@@ -352,66 +361,45 @@ class SlackInterface:
             # Not even worth mentioning.
             return
         text = e.event['text']
-        user_name = self._get_user_name(e.event['user'])
-        channel_name, is_im = self._get_channel_name_and_type(e.event['channel'])
-        print (text, user_name, channel_name, is_im)
+        for u_id, u_name in self.user_id_to_user_name.iteritems():
+            text = text.replace("<@{}>".format(u_id),
+                                "@{}".format(u_name))
+        u_name = self._get_user_name(e.event['user'])
+        chan_name, is_im = self._get_channel_name_and_type(e.event['channel'])
+        print (text, u_name, chan_name, is_im)
         return Message(
             text=text,
             user_id=e.event['user'],
-            user_name=user_name,
+            user_name=u_name,
             chan_id=e.event['channel'],
-            chan_name=channel_name,
+            chan_name=chan_name,
             im=is_im)
 
     def _get_channel_name_and_type(self, chan_id):
-        # Check caches.
-        if chan_id in self.id_to_channel:
-            is_im = False
-            return self.id_to_channel[chan_id], is_im
-        elif chan_id in self.im_channels:
-            is_im = True
-            return self.FAKE_PM_CHANNEL_NAME, is_im
-
-        # Is this a public or private channel?
-        try:
-            channel_name = self.slack.channels.info(chan_id)
-            channel_name = channel_name.body['channel']['name']
-            self.id_to_channel[chan_id] = channel_name
-            is_im = False
-            return channel_name, is_im
-        except slacker.Error, e:
-            if e.message != u'channel_not_found':
-                raise
-
-        # Is this an IM channel?
-        if chan_id in [im['id'] for im in self.slack.im.list().body['ims']]:
-            self.im_channels.add(chan_id)
-            is_im = True
-            return self.FAKE_PM_CHANNEL_NAME, is_im
-
-        raise ValueError, "Channel {} is neither chat nor IM.".format(chan_id)
+        # Check channel_id and im_channel caches.
+        for loop in (True, False):
+            if chan_id in self.chan_id_to_chan_name:
+                return self.chan_id_to_chan_name[chan_id], False
+            elif chan_id in self.user_id_to_im_chan_id.values():
+                return self.FAKE_PM_CHANNEL_NAME, True
+            if loop: self._update_cache()
+        raise ValueError, "Could not find channel_id."
 
     def _get_user_name(self, user_id):
-        if user_id in self.id_to_user:
-            return self.id_to_user[user_id]
-        else:
-            user = self.slack.users.info(user_id).body['user']
-            user_name = user['real_name'] or user['name']
-            self.id_to_user[user_id] = user_name
-            self.user_to_id[user_name] = user_id
-            return user_name
+        for loop in (True, False):
+            if user_id in self.user_id_to_user_name:
+                return self.user_id_to_user_name[user_id]
+            if loop: self._update_cache()
+        raise ValueError, "Could not find user id."
 
-    def _echo(self, msg):
-        assert isinstance(msg, Message)
-        self._write_to_channel(msg.chan_id,msg.text)
-        pass
+    def _send_response(self, response):
+        assert isinstance(response, Response)
 
-    def _write_to_channel(self, response):
         message = response.text.replace("@channel", "<!channel|@channel>")
+        if not message: return
         channel = response.chan_id
-        if not channel or not message:
-            # TODO: Implement instant messaging by player name/id.
-            return
+        if not channel and response.im:
+            channel = self.user_id_to_im_chan_id[response.im]
         self.slack.chat.post_message(channel, message, as_user=True)
 
     def listen(self):
@@ -425,19 +413,17 @@ class SlackInterface:
                 continue
             if not msg:
                 continue
-
-            # TODO: Implement 'sleeping' and 'waking' states.
+            if 'debug' in msg.text:
+                import ipdb; ipdb.set_trace()
 
             # TODO: Implement 'select a game to play' functionality.
 
             responses = self.responder.respond_to_message(msg)
-            if not responses:
-                continue
+            if not responses: continue
             if not isinstance(responses, (set, list, tuple)):
                 responses = [responses]
             for response in responses:
-                self._write_to_channel(response)
-
+                self._send_response(response)
 
 def main():
     si = SlackInterface(card_game)

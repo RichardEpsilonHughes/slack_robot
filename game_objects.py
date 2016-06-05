@@ -211,3 +211,5 @@ color_deck = CardDeck([Card(name=name) for name in
     ('Red','Orange','Yellow','Green','Blue','Indigo','Violet')], name='ColorDeck')
 hand_1 = CardPile(name='hand_1')
 hand_2 = CardPile(name='hand_2')
+
+deck_dict = {'color_deck':color_deck}
