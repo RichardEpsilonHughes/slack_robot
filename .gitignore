@@ -1,5 +1,6 @@
-# The slack token file
+# The slack token file and non-shared game rules.
 slack_token.py
+*private*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

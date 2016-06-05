@@ -15,7 +15,7 @@ POST_CHANNEL = '#test-channel'
 ## Reg-Ex compiler help-function.
 
 def re_comp(pattern):
-    pattern = pattern.format(BOT_USER_ID=("<@"+BOT_USER_ID+">:?"))
+    pattern = pattern.format(BOT_USER_ID=("@rng:?"))
     return re.compile(pattern, flags=re.IGNORECASE)
 
 ## Game Logic
@@ -137,13 +137,11 @@ class CardGame(RegexResponder):
         super(CardGame, self).__init__()
 
         # The deck or decks are the cards in play at the beginning of the game.
-        self._players = set()
-
         assert isinstance(deck, CardDeck)
 
         self._deck = deck
-        self._players = dict()
-        self._player_ids = dict()
+        self._player_id_to_name = dict()
+        self._player_name_to_id = dict()
         self._hands = dict()
         self._state = self.ASLEEP
         self._game_chan_id = None
@@ -211,10 +209,10 @@ class CardGame(RegexResponder):
         assert self._game_chan_id
         player_id = msg.user_id
         player_name = msg.user_name.lower()
-        if player_id in self._players:
+        if player_id in self._player_id_to_name:
             return Response(text="You're already in this game.", chan_id=msg.chan_id)
-        self._players[player_id] = player_name
-        self._player_ids[player_name] = player_id
+        self._player_id_to_name[player_id] = player_name
+        self._player_name_to_id[player_name] = player_id
         self._hands[player_id] = CardPile(name='Hand of {}'.format(player_name))
         responses = [Response(
             text="<@{}> has joined the game.".format(player_name), chan_id=self._game_chan_id)]
@@ -228,10 +226,10 @@ class CardGame(RegexResponder):
         responses = []
         player_id = msg.user_id
         player_name = msg.user_name.lower()
-        if player_id not in self._players:
+        if player_id not in self._player_id_to_name:
             return Response(text="You aren't a player, tho.", chan_id=msg.chan_id)
-        del self._players[player_id]
-        del self._player_ids[player_name]
+        del self._player_id_to_name[player_id]
+        del self._player_name_to_id[player_name]
         del self._hands[player_id]
         responses.append(Response(
             text="<@{}> has left the game.".format(player_name), chan_id=self._game_chan_id))
@@ -242,12 +240,12 @@ class CardGame(RegexResponder):
         return tuple(responses)
 
     def _list_players(self, match=None, msg=None):
-        if not self._players:
+        if not self._player_id_to_name:
             return Response(text="No one is playing yet. Sad!", chan_id=msg.chan_id)
         players = u'\n'.join(
             u' • <@{}>'.format(player_name)
-            for player_name in self._players.itervalues())
-        print self._players.values()
+            for player_name in self._player_id_to_name.itervalues())
+        print self._player_id_to_name.values()
         return Response(text=u"The players are:\n{}".format(players), chan_id=msg.chan_id)
 
     def _begin_game(self, match=None, msg=None):
@@ -255,33 +253,40 @@ class CardGame(RegexResponder):
         return self._help(msg=msg)
 
     def _check_hand(self, match=None, msg=None):
-        if msg.user_id not in self._players.keys():
+        # TODO: Appropriately handle checking other player's hands.
+        # TODO: Reformat how hands are displayed.
+        # TODO: Send hand information in an IM.
+        if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
         player_name = match.group('player_name').lstrip('@ ')
         if not player_name:
             player_name = msg.user_name.lower()
-        elif player_name not in self._player_ids:
+        elif player_name not in self._player_name_to_id:
             return Response(text="I don't recognize the player, '{}'.".format(player_name), chan_id=msg.chan_id)
-        player_id = self._player_ids[player_name]
+        player_id = self._player_name_to_id[player_name]
         hand = self._hands[player_id]
         text = "{p} has the hand: {h}".format(p=player_name,h=hand)
         return Response(text=text, chan_id=msg.chan_id)
 
     def _return_card(self, match=None, msg=None):
-        if msg.user_id not in self._players.keys():
+        # TODO: Refine response text.
+        if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
         card_name = match.group('card_name').strip().lower()
         key_fn = (lambda card:(str(card).lower().strip() == card_name))
-        pulled_card = self._hands[msg.user_id].pull(key_fn=key_fn)
+        pulled_card = [x for x in self._hands[msg.user_id].pull(key_fn=key_fn)][0]
         if not pulled_card:
             return Response(text="Ain't no card like that.", chan_id=msg.chan_id)
         self._deck.insert(pulled_card,top=False)
-        return Response(text="Returned {card} to the bottom of the deck.".format(card=pulled_card), chan_id=msg.chan_id)
+        return Response(
+            text="Returned {card} to the bottom of the deck.".format(
+                card=pulled_card), chan_id=msg.chan_id)
 
     def _shuffle_deck(self, match=None, msg=None):
-        if msg.user_id not in self._players.keys():
+        # TODO: Refine output formatting.
+        if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
         self._deck.shuffle()
@@ -290,7 +295,9 @@ class CardGame(RegexResponder):
             chan_id=self._game_chan_id)
 
     def _check_deck(self, match=None, msg=None):
-        if msg.user_id not in self._players.keys():
+        # TODO: Turn this to a private message.
+        # TODO: Refine output formatting.
+        if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
         peek_depth = match.group('peek_depth').strip('')
@@ -305,21 +312,29 @@ class CardGame(RegexResponder):
             return Response(text="Deck has {} cards.".format(len(self._deck)), chan_id=msg.chan_id)
 
     def _deal_cards(self, match=None, msg=None):
-        if msg.user_id not in self._players.keys():
+        # TODO: Refine output formatting.
+        if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
         player_name = match.group('player_name').lstrip('@')
-        if player_name not in self._player_ids:
-            return Response(text="I don't recognize the player, '{}'.".format(player_name), chan_id=msg.chan_id)
+        if player_name in ('everyone','all','us'):
+            player_ids = self._player_name_to_id
+        elif player_name in ('me','myself','I'):
+            player_ids = [msg.user_id]
+        elif player_name in self._player_name_to_id:
+            player_ids = [self._player_name_to_id[player_name]]
+        else:
+            return Response(text="I don't recognize the player, '{}'.".format(player_name),
+                            im=msg.user_id)
         num_cards = int(match.group('num_cards'))
-        player_id = self._player_ids[player_name]
         drawn_cards = self._deck.draw(num_cards)
-        self._hands[player_id].add(drawn_cards)
-        text="Player {p} drew cards: {c}".format(
-            p=player_name, c=drawn_cards)
+        text = []
+        for player_id in player_ids:
+            self._hands[player_id].add(drawn_cards)
+            text.append("@{p} drew: {c}".format(
+                p=self._player_id_to_name[player_id], c=drawn_cards))
+        text=u"\n".join(text)
         return Response(text=text, chan_id=msg.chan_id)
-
-card_game = CardGame(deck=deck_dict['color_deck'])
 
 ## The Slack Listener
 
@@ -413,10 +428,6 @@ class SlackInterface:
                 continue
             if not msg:
                 continue
-            if 'debug' in msg.text:
-                import ipdb; ipdb.set_trace()
-
-            # TODO: Implement 'select a game to play' functionality.
 
             responses = self.responder.respond_to_message(msg)
             if not responses: continue
@@ -426,6 +437,8 @@ class SlackInterface:
                 self._send_response(response)
 
 def main():
+    # TODO: Implement 'select a game to play' functionality.
+    card_game = CardGame(deck=deck_dict['major_arcana'])
     si = SlackInterface(card_game)
     si.listen()
 

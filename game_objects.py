@@ -209,7 +209,49 @@ class CardPile(object):
 
 color_deck = CardDeck([Card(name=name) for name in
     ('Red','Orange','Yellow','Green','Blue','Indigo','Violet')], name='ColorDeck')
-hand_1 = CardPile(name='hand_1')
-hand_2 = CardPile(name='hand_2')
+color_deck.shuffle()
 
-deck_dict = {'color_deck':color_deck}
+def poker_name(rank, suit):
+    if rank in range(2,11):
+        rank = str(rank)
+    else:
+        rank = {1:"Ace",11:"Jack",12:"Queen",13:"King"}[rank]
+    return "{r} of {s}".format(r=rank, s=suit)
+poker_deck = CardDeck([
+    Card(rank=rank, suit=suit, name=poker_name(rank, suit))
+    for rank in range(1, 13+1)
+    for suit in ("Hearts","Diamonds","Clubs","Spades")],
+    name="Poker Deck")
+poker_deck.shuffle()
+
+major_arcana = CardDeck(
+    [Card(name=name) for name in (
+        "The Fool",
+        "The Magician",
+        "The High Priestess",
+        "The Empress",
+        "The Emperor",
+        "The Hierophant",
+        "The Lovers",
+        "The Chariot",
+        "Strength",
+        "The Hermit",
+        "Wheel of Fortune",
+        "Justice",
+        "The Hanged Man",
+        "Death",
+        "Temperance",
+        "The Devil",
+        "The Tower",
+        "The Star",
+        "The Moon",
+        "The Sun",
+        "Judgement",
+        "The World",
+    )],
+    name="Major Arcana")
+
+deck_dict = {
+    'color_deck':color_deck,
+    'poker_deck':poker_deck,
+    'major_arcana':major_arcana}
