@@ -2,15 +2,17 @@ import random
 
 class Card(object):
 
-    def __init__(self, suit=None, rank=None, name=None):
-        "Initializer. If you want the string to print "
+    def __init__(self, suit=None, rank=None, name=None, details=None):
+        "Initializer."
         assert suit is None or isinstance(suit, (basestring)), "suit must be string"
         assert rank is None or isinstance(rank, (int)), "rank must be int"
-        assert name is None or isinstance(name, (basestring)), "name must be string"
+        assert isinstance(name, (basestring)), "name must be string"
+        assert details is None or isinstance(details, (basestring)), "details must be string"
         assert suit or rank or name, "At least one non-none input, please"
         self._suit = suit
         self._rank = rank
         self._name = name
+        self._details = details
 
     @property
     def suit(self):
@@ -24,6 +26,10 @@ class Card(object):
     def name(self):
         "Return the read-only name property."
         return self._name
+    @property
+    def details(self):
+        "Return the read-only details property."
+        return self._details
 
     # Magic String Methods.
     def __str__(self):
@@ -152,9 +158,6 @@ class CardPile(object):
         return repr(self)
     def __repr__(self):
         return self.name+':{'+','.join(str(card) for card in self._cards)+'}'
-        return "CardPile(cards={cards}{name})".format(
-            cards=repr(self._cards),
-            name='' if not self.name else ', name={}'.format(repr(self.name)))
 
     @property
     def name(self):
@@ -193,13 +196,17 @@ class CardPile(object):
         for that function until you have pulled num_cards or no cards return
         True for that function.
         Return those cards as a set."""
-        assert isinstance(num_cards, int) and num_cards >= 0
-        assert isinstance(key_fn, type(lambda x:x))
+        assert (isinstance(num_cards, int) and num_cards >= 0) or num_cards == 'all'
+        assert (isinstance(key_fn, type(lambda x:x))) or num_cards == 'all'
 
         # Pull cards.
         pulled_cards = set()
+        if num_cards == 'all':
+            pulled_cards = self._cards
+            self._cards -= pulled_cards
+            return pulled_cards
         for card in self._cards:
-            if num_cards <= 0:
+            if num_cards == 0:
                 break
             if key_fn(card):
                 pulled_cards.add(card)
@@ -255,3 +262,5 @@ deck_dict = {
     'color_deck':color_deck,
     'poker_deck':poker_deck,
     'major_arcana':major_arcana}
+from private_game_data import private_deck_dict
+deck_dict.update(private_deck_dict)

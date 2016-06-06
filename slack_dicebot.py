@@ -8,14 +8,14 @@ from slacksocket import SlackSocket
 
 from game_objects import CardDeck, CardPile, deck_dict
 from slack_objects import Message, Response
-from slack_token import SLACK_TOKEN, BOT_USER_ID
+from slack_token import SLACK_TOKEN_dict
 
-POST_CHANNEL = '#test-channel'
+SLACK_TOKEN, BOT_USER_ID, BOT_USER_NAME = SLACK_TOKEN_dict['lewd']
 
 ## Reg-Ex compiler help-function.
 
 def re_comp(pattern):
-    pattern = pattern.format(BOT_USER_ID=("@rng:?"))
+    pattern = pattern.format(BOT_USER_ID=("@"+BOT_USER_NAME+":?"))
     return re.compile(pattern, flags=re.IGNORECASE)
 
 ## Game Logic
@@ -44,9 +44,9 @@ class RegexResponder(object):
         # state, and test regex's until we get one that matches. Use the
         # response_method to calculate the return value.
         response_method, match_obj = None, None
-        print "Text: {}".format(msg.text)
+        print u"Text: {}".format(msg.text)
         for reg_ex_obj, method_name in self.REGEX_METHOD_BY_STATE[self._state]:
-            print "Testing {}...".format(reg_ex_obj.pattern)
+            print u"Testing {}...".format(reg_ex_obj.pattern)
             match_obj = reg_ex_obj.search(msg.text)
             if match_obj:
                 print "Matched;",str(match_obj)
@@ -61,6 +61,8 @@ class RegexResponder(object):
         return response_method(match=match_obj, msg=msg)
 
 class CardGame(RegexResponder):
+
+    # TODO: Create a class method that serves as a decorator for methods that only players can use.
 
     # Game States.
     ASLEEP = 0
@@ -116,9 +118,15 @@ class CardGame(RegexResponder):
             # What is in my hand? Or, uh, someone else's hand?
             (re_comp(r'{BOT_USER_ID}\s+check\s+hand\s*(?P<player_name>@?[\w.]*)'),
              '_check_hand'),
+            # Examine this card.
+            (re_comp(r'{BOT_USER_ID}\s+examine\s+card\s*(?P<card_name>@?[\s\w.]*)'),
+             '_examine_card'),
             # Return this card to the deck.
             (re_comp(r'{BOT_USER_ID}\s+return\s+card\s*(?P<card_name>[\s\w]*)'),
              '_return_card'),
+            # Return your whole hand to the deck.
+            (re_comp(r'{BOT_USER_ID}\s+discard\s+hand'),
+             '_discard_hand'),
             ## DECK MANAGEMENT
             # Shuffle!
             (re_comp(r'{BOT_USER_ID}\s+shuffle'),
@@ -129,6 +137,7 @@ class CardGame(RegexResponder):
             # Deal {person} {num_cards} cards.
             (re_comp('\s+deal\s+(?P<num_cards>\d+)\s+to\s(?P<player_name>@?[\w.]+)'),
              '_deal_cards'),
+            # Grumble...
             (re_comp(r'{BOT_USER_ID}'),
              '_grumble'),
         )}
@@ -146,6 +155,12 @@ class CardGame(RegexResponder):
         self._state = self.ASLEEP
         self._game_chan_id = None
         self._game_chan_name = None
+
+    def _format_card_sequence(self, cards, sort=True):
+        if sort:
+            return u"\n".join(u' • `{}`'.format(card.name) for card in sorted(cards))
+        else:
+            return u"\n".join(u' • `{}`'.format(card.name) for card in cards)
 
     def _no_im(self, msg):
         if msg.im:
@@ -190,16 +205,19 @@ class CardGame(RegexResponder):
                 u' • `<@{B_U_ID}> leave`: Leave the game.',
                 u' • `<@{B_U_ID}> list`: List the players in the game.',
                 u' • `<@{B_U_ID}> begin game`: Start the game.',
-                u' • `<@{B_U_ID}> help`: Play this message again.', ))
+                u' • `<@{B_U_ID}> help`: Play this message again.',
+            ))
         elif self._state == self.ACTIVE_GAME:
             text = u'\n'.join((
                 u'Card game is going down in #{CHANNEL}.:',
                 u' • `<@{B_U_ID}> sleep`: Put <@{B_U_ID}> back to sleep.',
                 u' • `<@{B_U_ID}> list`: List the players in the game.',
                 u' • `<@{B_U_ID}> check hand [player]`: Look at someone\'s hand. Default is your hand.',
+                u' • `<@{B_U_ID}> examine card [card name]`: Display the detailed information for this card.',
                 u' • `<@{B_U_ID}> return card [card name]`: Return a card in your hand to the bottom of the deck.',
+                u' • `<@{B_U_ID}> discard hand`: Return all your cards to the bottom of the deck.',
                 u' • `<@{B_U_ID}> shuffle`: Shuffle the deck.',
-                u' • `<@{B_U_ID}> check deck`: Start the game.',
+                u' • `<@{B_U_ID}> check deck [num_cards]`: Check the size of the deck, or peek at the number of .',
                 u' • `<@{B_U_ID}> deal [num_cards] to [player]`: Deal off the top of the deck.',
             ))
         text=text.format(B_U_ID=BOT_USER_ID, CHANNEL=self._game_chan_name)
@@ -253,50 +271,90 @@ class CardGame(RegexResponder):
         return self._help(msg=msg)
 
     def _check_hand(self, match=None, msg=None):
-        # TODO: Appropriately handle checking other player's hands.
-        # TODO: Reformat how hands are displayed.
-        # TODO: Send hand information in an IM.
+        # TODO: Test if we appropriately handle checking other player's hands.
         if msg.user_id not in self._player_id_to_name.keys():
-            print "PLAYERS ONLY"
             return
         player_name = match.group('player_name').lstrip('@ ')
         if not player_name:
             player_name = msg.user_name.lower()
         elif player_name not in self._player_name_to_id:
             return Response(text="I don't recognize the player, '{}'.".format(player_name), chan_id=msg.chan_id)
+        if player_name == msg.user_name.lower():
+            # This is your own hand, so IM full details.
+            hand = self._hands[msg.user_id]
+            if hand:
+                text = u"Your hand is:\n" + self._format_card_sequence(hand.peek())
+            else:
+                text = u"Your hand is empty."
+            return Response(text=text, im=msg.user_id)
         player_id = self._player_name_to_id[player_name]
         hand = self._hands[player_id]
-        text = "{p} has the hand: {h}".format(p=player_name,h=hand)
-        return Response(text=text, chan_id=msg.chan_id)
+        text = "{p} has {h} card{s} in their hand.".format(
+            p=player_name, h=len(hand),
+            s='s' if len(hand) != 1 else '')
+        return Response(text=text, im=msg.user_id)
+
+    def _examine_card(self, match=None, msg=None):
+        card_name = match.group('card_name').strip()
+        if not card_name:
+            return Response(text="This command requires a card name to function.", im=msg.user_id)
+        all_cards = list(self._deck.peek())
+        for hand in self._hands.values():
+            all_cards += list(hand.peek())
+        matching_card = [card for card in all_cards if card.name == card_name]
+        if len(matching_card) == 0:
+            return Response(text="I couldn't find that card. May not be in the game; did you typo?", im=msg.user_id)
+        elif len(matching_card) > 1:
+            return Response(
+                text="What the fuck? More than one card with the name `{}`! That shouldn't be!".format(card_name),
+                im=msg.user_id)
+        else:
+            matching_card = matching_card[0]
+        details = matching_card.details
+        if not details:
+            return Response(
+                text="The card `{c}` has no details.".format(c=card_name),
+                im=msg.user_id)
+        return Response(text=(u"`"+matching_card.name+u"`\n```\n"+details+u"\n```"), im=msg.user_id)
 
     def _return_card(self, match=None, msg=None):
-        # TODO: Refine response text.
         if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
-        card_name = match.group('card_name').strip().lower()
-        key_fn = (lambda card:(str(card).lower().strip() == card_name))
+        card_name = match.group('card_name').lower().strip()
+        key_fn = lambda card: (
+            card.name.lower().strip() == card_name )
         pulled_card = [x for x in self._hands[msg.user_id].pull(key_fn=key_fn)][0]
         if not pulled_card:
-            return Response(text="Ain't no card like that.", chan_id=msg.chan_id)
+            return Response(text="No card like that found.", im=msg.user_id)
         self._deck.insert(pulled_card,top=False)
         return Response(
-            text="Returned {card} to the bottom of the deck.".format(
-                card=pulled_card), chan_id=msg.chan_id)
+            text="{p} returned `{card}` to the bottom of the deck.".format(
+                p=msg.user_name, card=pulled_card.name),
+            chan_id=self._game_chan_id)
+
+    def _discard_hand(self, match=None, msg=None):
+        if msg.user_id not in self._player_id_to_name.keys():
+            print "PLAYERS ONLY"
+            return
+        self._deck.insert(
+            self._hands[msg.user_id].pull(num_cards='all',),
+            top=False)
+        return Response(
+            text="{p} returned their entire hand to the bottom of the deck.".format(p=msg.user_name),
+            chan_id=self._game_chan_id)
 
     def _shuffle_deck(self, match=None, msg=None):
-        # TODO: Refine output formatting.
         if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
         self._deck.shuffle()
         return Response(
-            text="`{player} shuffling deck`".format(player=msg.user_name.lower()),
+            text="`{player} shuffles the deck...`".format(player=msg.user_name.lower()),
             chan_id=self._game_chan_id)
 
     def _check_deck(self, match=None, msg=None):
-        # TODO: Turn this to a private message.
-        # TODO: Refine output formatting.
+        responses = []
         if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
@@ -307,12 +365,24 @@ class CardGame(RegexResponder):
             peek_depth = 0
         if peek_depth:
             peek = self._deck.peek(peek_depth)
-            return Response(text="Peekin' dis deck: {}".format(peek), chan_id=msg.chan_id)
+            responses.append(Response(
+                text=(
+                    u"First {n} card{s}:\n".format(
+                        n=len(peek),
+                        s=(u' is' if len(peek) == 1 else u's are'))
+                    + self._format_card_sequence(peek)),
+                im=msg.user_id))
+            responses.append(Response(
+                text=u"{u} peeks at the first {n} card{s} of the deck.".format(
+                    u=msg.user_name, n=len(peek), s=('s' if len(peek) > 1 else '')),
+                chan_id=self._game_chan_id))
         else:
-            return Response(text="Deck has {} cards.".format(len(self._deck)), chan_id=msg.chan_id)
+            responses.append(Response(
+                text=u"The deck has no cards.".format(len(self._deck)),
+                im=msg.user_id))
+        return responses
 
     def _deal_cards(self, match=None, msg=None):
-        # TODO: Refine output formatting.
         if msg.user_id not in self._player_id_to_name.keys():
             print "PLAYERS ONLY"
             return
@@ -327,14 +397,15 @@ class CardGame(RegexResponder):
             return Response(text="I don't recognize the player, '{}'.".format(player_name),
                             im=msg.user_id)
         num_cards = int(match.group('num_cards'))
-        drawn_cards = self._deck.draw(num_cards)
         text = []
         for player_id in player_ids:
+            drawn_cards = self._deck.draw(num_cards)
             self._hands[player_id].add(drawn_cards)
-            text.append("@{p} drew: {c}".format(
-                p=self._player_id_to_name[player_id], c=drawn_cards))
+            text.append(u"@{p} drew:\n{d}".format(
+                p=self._player_id_to_name[player_id],
+                d=self._format_card_sequence(drawn_cards)))
         text=u"\n".join(text)
-        return Response(text=text, chan_id=msg.chan_id)
+        return Response(text=text, chan_id=self._game_chan_id)
 
 ## The Slack Listener
 
@@ -345,7 +416,6 @@ class SlackInterface:
             "Hello, world. I'm posting this to @channel in response to {user}."),
     }
 
-    POST_CHANNEL = '#test-channel'
     FAKE_PM_CHANNEL_NAME = '___private_message___'
     def __init__(self, responder=None):
         assert isinstance(responder, RegexResponder)
