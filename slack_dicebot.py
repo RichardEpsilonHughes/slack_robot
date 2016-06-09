@@ -19,14 +19,26 @@ def re_comp(pattern):
 ## Game Logic
 
 class Responder(object):
+    "Any class that implements the respond-to-message interface is a responder."
 
     def respond_to_message(self, msg):
+        "Takes a message, coughs up a response."
         return Response(text="NOT IMPLEMENTED ERROR",chan_id=msg.chan_id)
 
-class RegexResponder(Responder):
-    "An abstract class that defines the basic call-response loop."
+class MethodResponder(Responder):
+    """
+    A method responder passes messages directly to a list of its internal instance methods,
+    until one returns a response object.
+    """
 
-    REGEX_METHOD_BY_STATE = None
+    METHOD_LIST_BY_STATE = {}
+
+class RegexResponder(Responder):
+    """
+    A regex responder matches incoming classes against a dictionary of regular expressions .
+    """
+
+    REGEX_METHOD_BY_STATE = {}
 
     def __init__(self):
         assert hasattr(self,'REGEX_METHOD_BY_STATE'), "No REGEX_METHOD_BY_STATE for a regex responder?"
@@ -69,8 +81,6 @@ class RegexResponder(Responder):
         if msg.im:
             text = u'{} '.format(("@" + BOT_USER_NAME)) + text
         return text
-
-
 
 class CardGame(RegexResponder):
 
@@ -440,6 +450,11 @@ class SlackInterface:
             "Hello, world. I'm posting this to @channel in response to {user}."),
     }
 
+    # Get any sequence of word-characters, possibly including the @ before them to indicate a username,
+    # OR,
+    # Get ANYTHING that starts and ends with ``.
+    TOKENIZER_RE = re.compile(r'(?:@?\w+|`[^`]*`)')
+
     FAKE_PM_CHANNEL_NAME = '___private_message___'
     def __init__(self, responder=None):
         assert isinstance(responder, RegexResponder)
@@ -467,26 +482,24 @@ class SlackInterface:
             for i in self.slack.im.list().body['ims']}
 
     def _parse_message(self, e):
-        if e.type not in ('message',):
-            # raise ValueError("event.type != message; type is {}".format(e.type))
-            return
-        elif e.event['user'] == BOT_USER_ID:
-            # Not even worth mentioning.
-            return
+        if e.type not in ('message',) or e.event['user'] == BOT_USER_ID:
+            return None
+
+        # Extract and preprocess text.
         text = e.event['text']
         for u_id, u_name in self.user_id_to_user_name.iteritems():
             text = text.replace("<@{}>".format(u_id),
                                 "@{}".format(u_name))
+        tokenized = self.TOKENIZER_RE.findall(text.lower())
         u_name = self._get_user_name(e.event['user'])
         chan_name, is_im = self._get_channel_name_and_type(e.event['channel'])
         print (text, u_name, chan_name, is_im)
         return Message(
             text=text,
-            user_id=e.event['user'],
-            user_name=u_name,
-            chan_id=e.event['channel'],
-            chan_name=chan_name,
-            im=is_im)
+            user_id=e.event['user'],    user_name=u_name,
+            chan_id=e.event['channel'], chan_name=chan_name,
+            im=is_im,
+            tokenized=tokenized)
 
     def _get_channel_name_and_type(self, chan_id):
         # Check channel_id and im_channel caches.
