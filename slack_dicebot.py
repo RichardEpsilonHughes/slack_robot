@@ -8,9 +8,7 @@ from slacksocket import SlackSocket
 
 from game_objects import CardDeck, CardPile, deck_dict
 from slack_objects import Message, Response
-from slack_token import SLACK_TOKEN_dict
-
-SLACK_TOKEN, BOT_USER_ID, BOT_USER_NAME = SLACK_TOKEN_dict['lewd']
+from slack_token import SLACK_TOKEN, BOT_USER_ID, BOT_USER_NAME
 
 ## Reg-Ex compiler help-function.
 
