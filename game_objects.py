@@ -202,7 +202,7 @@ class CardPile(object):
         # Pull cards.
         pulled_cards = set()
         if num_cards == 'all':
-            pulled_cards = self._cards
+            pulled_cards = set(self._cards)
             self._cards -= pulled_cards
             return pulled_cards
         for card in self._cards:

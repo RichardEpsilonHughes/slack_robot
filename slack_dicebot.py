@@ -20,7 +20,12 @@ def re_comp(pattern):
 
 ## Game Logic
 
-class RegexResponder(object):
+class Responder(object):
+
+    def respond_to_message(self, msg):
+        return Response(text="NOT IMPLEMENTED ERROR",chan_id=msg.chan_id)
+
+class RegexResponder(Responder):
     "An abstract class that defines the basic call-response loop."
 
     REGEX_METHOD_BY_STATE = None
@@ -44,10 +49,11 @@ class RegexResponder(object):
         # state, and test regex's until we get one that matches. Use the
         # response_method to calculate the return value.
         response_method, match_obj = None, None
-        print u"Text: {}".format(msg.text)
+        text = self._preprocess_msg_text(msg)
+        print u"Effective Text: {}".format(text)
         for reg_ex_obj, method_name in self.REGEX_METHOD_BY_STATE[self._state]:
             print u"Testing {}...".format(reg_ex_obj.pattern)
-            match_obj = reg_ex_obj.search(msg.text)
+            match_obj = reg_ex_obj.search(text)
             if match_obj:
                 print "Matched;",str(match_obj)
                 response_method = getattr(self,method_name)
@@ -60,9 +66,18 @@ class RegexResponder(object):
 
         return response_method(match=match_obj, msg=msg)
 
+    def _preprocess_msg_text(self, msg):
+        text = msg.text
+        if msg.im:
+            text = u'{} '.format(("@" + BOT_USER_NAME)) + text
+        return text
+
+
+
 class CardGame(RegexResponder):
 
     # TODO: Create a class method that serves as a decorator for methods that only players can use.
+    # TODO: Create a class method that serves as a decorator for methods that don't accept PMs.
 
     # Game States.
     ASLEEP = 0
@@ -149,6 +164,9 @@ class CardGame(RegexResponder):
         assert isinstance(deck, CardDeck)
 
         self._deck = deck
+        self._initialize()
+
+    def _initialize(self):
         self._player_id_to_name = dict()
         self._player_name_to_id = dict()
         self._hands = dict()
@@ -185,15 +203,20 @@ class CardGame(RegexResponder):
         self._state = self.ACCEPTING_PLAYERS
         self._game_chan_id = msg.chan_id
         self._game_chan_name = msg.chan_name
-        return self._help(msg=msg)
+        response = self._help(msg=msg)
+        response.chan_id = self._game_chan_id
+        return response
 
     def _back_to_sleep(self, match=None, msg=None):
         print match
         interrupt = self._no_im(msg)
         if interrupt: return interrupt
-        self._state = self.ASLEEP
-        self._game_chan_id = None
-        self._game_chan_name = None
+
+        for hand in self._hands.values():
+            cards = hand.pull(num_cards='all',)
+            self._deck.insert(cards)
+
+        self._initialize()
         return Response(text="Yawn... zzz", chan_id=msg.chan_id)
 
     def _help(self, match=None, msg=None):
@@ -268,7 +291,10 @@ class CardGame(RegexResponder):
 
     def _begin_game(self, match=None, msg=None):
         self._state=self.ACTIVE_GAME
-        return self._help(msg=msg)
+        self._deck.shuffle()
+        response = self._help(msg=msg)
+        response.chan_id = self._game_chan_id
+        return response
 
     def _check_hand(self, match=None, msg=None):
         # TODO: Test if we appropriately handle checking other player's hands.
@@ -378,7 +404,7 @@ class CardGame(RegexResponder):
                 chan_id=self._game_chan_id))
         else:
             responses.append(Response(
-                text=u"The deck has no cards.".format(len(self._deck)),
+                text=u"The deck has {} card/s.".format(len(self._deck)),
                 im=msg.user_id))
         return responses
 
@@ -435,14 +461,18 @@ class SlackInterface:
         self.chan_id_to_chan_name = {
             c['id']:c['name']
             for c in self.slack.channels.list().body['channels']}
+        self.chan_id_to_chan_name.update({
+            g['id']:g['name']
+            for g in self.slack.groups.list().body['groups']})
         self.user_id_to_im_chan_id = {
             i['user']:i['id']
             for i in self.slack.im.list().body['ims']}
 
     def _parse_message(self, e):
         if e.type not in ('message',):
-            raise ValueError("event.type != message; type is {}".format(e.type))
-        if e.event['user'] == BOT_USER_ID:
+            # raise ValueError("event.type != message; type is {}".format(e.type))
+            return
+        elif e.event['user'] == BOT_USER_ID:
             # Not even worth mentioning.
             return
         text = e.event['text']
@@ -484,10 +514,15 @@ class SlackInterface:
         if not message: return
         channel = response.chan_id
         if not channel and response.im:
+            if not response.im in self.user_id_to_im_chan_id:
+                self._update_cache()
             channel = self.user_id_to_im_chan_id[response.im]
+        if not channel:
+            raise StandardError, "No channel, explicit or actual, in response {}".format(response)
         self.slack.chat.post_message(channel, message, as_user=True)
 
     def listen(self):
+        print "Happy birthday!"
         for e in self.socket.events():
 
             # Convert socket event to Message object, if possible.
@@ -504,7 +539,11 @@ class SlackInterface:
             if not isinstance(responses, (set, list, tuple)):
                 responses = [responses]
             for response in responses:
-                self._send_response(response)
+                try:
+                    self._send_response(response)
+                except StandardError, err:
+                    print err
+                    continue
 
 def main():
     # TODO: Implement 'select a game to play' functionality.
