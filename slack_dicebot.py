@@ -33,6 +33,28 @@ class MethodResponder(Responder):
 
     METHOD_LIST_BY_STATE = {}
 
+    def __init__(self):
+        assert hasattr(self, 'METHOD_LIST_BY_STATE'), "No METHOD_LIST_BY_STATE for a MethodResponder?"
+        assert isinstance(self.METHOD_LIST_BY_STATE, dict)
+        for method_list in self.METHOD_LIST_BY_STATE.itervalues():
+            assert isinstance(method_list, (tuple, list))
+            for method_name in method_list:
+                assert hasattr(self, method_name), "method name {} not defined".format(method_name)
+                assert type(getattr(self, method_name)) == type(self.__init__), (
+                    "{meth_name} not a function, but rather a {meth_type}".format(
+                        meth_name=method_name, meth_type=type(getattr(self, method_name))))
+
+    def respond_to_message(self, msg):
+        "Takes a message, coughs up a response."
+        method_list = self.METHOD_LIST_BY_STATE[self.state]
+        for method_name in method_list:
+            response_method = getattr(self, method_name)
+            response = response_method(msg)
+            if isinstance(response,(tuple, set, list)):
+                return response
+            elif isinstance(response, Response):
+                return [response]
+
 class RegexResponder(Responder):
     """
     A regex responder matches incoming classes against a dictionary of regular expressions .
@@ -82,7 +104,176 @@ class RegexResponder(Responder):
             text = u'{} '.format(("@" + BOT_USER_NAME)) + text
         return text
 
-class CardGame(RegexResponder):
+class MethodCardGame(MethodResponder):
+
+    # CLASS VARIABLES
+
+    # Game states
+    ASLEEP = 0
+    ACCEPTING_PLAYERS = 1
+    ACTIVE_GAME = 2
+
+    METHOD_LIST_BY_STATE = {
+        ASLEEP:(
+            '_wake_up',
+            '_quit',
+            '_grumble',
+            ),
+        ACCEPTING_PLAYERS:(
+            '_back_to_sleep',
+            # '_help',
+            # '_add_player',
+            # '_remove_player',
+            # '_list_player',
+            # '_begin_game',
+            # '_grumble',
+        ),
+        ACTIVE_GAME:(
+            '_back_to_sleep',
+            # '_help',
+            # '_list_players',
+            # '_check_hand',
+            # '_examine_card',
+            # '_return_card',
+            # '_discard_hand',
+            # '_shuffle_deck',
+            # '_check_deck',
+            # '_deal_cards',
+            # '_grumble'
+        )}
+
+    HELP_STR_BY_STATE = {
+        ASLEEP:"",
+        ACCEPTING_PLAYERS:u'\n'.join((
+            u'Card game is ready to start in #{CHANNEL} after players join:',
+            u' • `{BOT} sleep`: Put {BOT} back to sleep.',
+            u' • `{BOT} join`: Join the game.',
+            u' • `{BOT} leave`: Leave the game.',
+            u' • `{BOT} list`: List the players in the game.',
+            u' • `{BOT} begin game`: Start the game.',
+            u' • `{BOT} help`: Play this message again.',
+        )),
+        ACTIVE_GAME:u'\n'.join((
+            u'Card game is going down in #{CHANNEL}.:',
+            u' • `<@{BOT}> sleep`: Put <@{BOT}> back to sleep.',
+            u' • `<@{BOT}> list`: List the players in the game.',
+            u' • `<@{BOT}> check hand [player]`: Look at someone\'s hand. Default is your hand.',
+            u' • `<@{BOT}> examine card [card name]`: Display the detailed information for this card.',
+            u' • `<@{BOT}> return card [card name]`: Return a card in your hand to the bottom of the deck.',
+            u' • `<@{BOT}> discard hand`: Return all your cards to the bottom of the deck.',
+            u' • `<@{BOT}> shuffle`: Shuffle the deck.',
+            u' • `<@{BOT}> check deck [num_cards]`: Check the size of the deck, or peek at the number of .',
+            u' • `<@{BOT}> deal [num_cards] to [player]`: Deal off the top of the deck.',
+        ))}
+
+    def __init__(self, deck=None):
+        super(MethodCardGame, self).__init__()
+        assert isinstance(deck, CardDeck)
+
+        self.deck = deck
+        self._initialize()
+
+    def _initialize(self):
+        self.player_id_to_name = dict()
+        self.player_name_to_id = dict()
+        self.player_id_to_hand = dict()
+        self.state = self.ASLEEP
+        self.game_chan_id = None
+        self.game_chan_name = None
+
+    # Static decorators start {
+    def _no_ims(func):
+        print "defining func_wrapper for _no_ims"
+        def func_wrapper(self, msg):
+            print "checking if msg is im..."
+            if msg.im:
+                return Response(
+                    text="That function (`{}`) doesn't work in IMs. Try in a channel.".format(func.__name__),
+                    im=msg.user_id)
+            else:
+                return func(self, msg)
+        return func_wrapper
+
+    def _verify_msg_input(*args):
+        print "defining func_decorator for _verify_msg_input"
+        def _function_decorator(func):
+            print "defining func_wrapper for _verify_msg_input"
+            def func_wrapper(self, msg):
+                print "checking for {0} in {1}".format(args, msg.tokenized)
+                if not all((str(word) in msg.tokenized) for word in args):
+                    return
+                else:
+                    return func(self, msg)
+            return func_wrapper
+        return _function_decorator
+
+    def _players_only(func):
+        print "defining func_wrapper for _players_only"
+        def func_wrapper(self, msg):
+            if msg.user_id not in self.player_id_to_name:
+                return
+            else:
+                return func(self, msg)
+        return func_wrapper
+    # } and end.
+
+    # Private functions start {
+    def _format_card_sequence(self, cards, sort=True):
+        if sort: cards = sorted(cards)
+        return u"\n".join(
+            u' • `{}`'.format(card.name) for card in cards)
+    @property
+    def help_str_for_state(self):
+        return self.HELP_STR_BY_STATE[self.state].format(
+            BOT="<@{}>".format(BOT_USER_ID),
+            B_U_ID=BOT_USER_ID,
+            CHANNEL=self.game_chan_name)
+    # } and end.
+
+    # Responder methods start {
+    @_verify_msg_input('wake')
+    @_no_ims
+    def _wake_up(self, msg):
+        print "WAKE UP"
+        self.state = self.ACCEPTING_PLAYERS
+        self.game_chan_id   = msg.chan_id
+        self.game_chan_name = msg.chan_name
+        return Response(text=self.help_str_for_state,
+                        chan_id=self.game_chan_id)
+
+    @_verify_msg_input('quit')
+    @_no_ims
+    def _quit(self, msg):
+        raise SystemExit
+
+    def _grumble(self, msg=None):
+        text = {
+            self.ASLEEP:"Gnr... zzz.... snr...",
+            self.ACCEPTING_PLAYERS:"Wot? I didn't catch that.",
+            self.ACTIVE_GAME:"Wot? I didn't catch that.",
+            }[self.state]
+        return Response(text=text,chan_id=msg.chan_id)
+
+    @_verify_msg_input('sleep')
+    @_no_ims
+    def _back_to_sleep(self, msg):
+        for hand in self.player_id_to_hand.values():
+            self.deck.insert(hand.pull(num_cards='all',))
+        self._initialize()
+        if msg.im:
+            return [
+                Response(text="{} put me to sleep... Night night... zzz".format(msg.user_name),
+                         chan_id=self.game_chan_id),
+                Response(text="Night night... zzz",
+                         im=msg.user_id)
+            ]
+        else:
+            return Response(text="Yawn... zzz", chan_id=msg.chan_id)
+    # } and end.
+    pass
+    # End class.
+
+class RegexCardGame(RegexResponder):
 
     # TODO: Create a class method that serves as a decorator for methods that only players can use.
     # TODO: Create a class method that serves as a decorator for methods that don't accept PMs.
@@ -166,7 +357,7 @@ class CardGame(RegexResponder):
         )}
 
     def __init__(self, deck=None):
-        super(CardGame, self).__init__()
+        super(RegexCardGame, self).__init__()
 
         # The deck or decks are the cards in play at the beginning of the game.
         assert isinstance(deck, CardDeck)
@@ -404,7 +595,7 @@ class CardGame(RegexResponder):
                     u"First {n} card{s}:\n".format(
                         n=len(peek),
                         s=(u' is' if len(peek) == 1 else u's are'))
-                    + self._format_card_sequence(peek)),
+                    + self._format_card_sequence(peek, sort=False)),
                 im=msg.user_id))
             responses.append(Response(
                 text=u"{u} peeks at the first {n} card{s} of the deck.".format(
@@ -457,7 +648,7 @@ class SlackInterface:
 
     FAKE_PM_CHANNEL_NAME = '___private_message___'
     def __init__(self, responder=None):
-        assert isinstance(responder, RegexResponder)
+        assert isinstance(responder, Responder)
         self.responder = responder
 
         self.slack = slacker.Slacker(SLACK_TOKEN)
@@ -491,15 +682,22 @@ class SlackInterface:
             text = text.replace("<@{}>".format(u_id),
                                 "@{}".format(u_name))
         tokenized = self.TOKENIZER_RE.findall(text.lower())
+
+        # Extract user and channel names from cache.
         u_name = self._get_user_name(e.event['user'])
         chan_name, is_im = self._get_channel_name_and_type(e.event['channel'])
+
+        # if we aren't called out by name and this isn't a direct message to us,
+        # we absolutely do not care
+        if '@{}'.format(BOT_USER_NAME) not in tokenized and not is_im: return
+
         print (text, u_name, chan_name, is_im)
+
         return Message(
-            text=text,
+            text=text,                  tokenized=tokenized,
             user_id=e.event['user'],    user_name=u_name,
             chan_id=e.event['channel'], chan_name=chan_name,
-            im=is_im,
-            tokenized=tokenized)
+            im=is_im)
 
     def _get_channel_name_and_type(self, chan_id):
         # Check channel_id and im_channel caches.
@@ -535,7 +733,6 @@ class SlackInterface:
     def listen(self):
         print "Happy birthday!"
         for e in self.socket.events():
-
             # Convert socket event to Message object, if possible.
             try:
                 msg = self._parse_message(e)
@@ -555,10 +752,12 @@ class SlackInterface:
                 except StandardError, err:
                     print err
                     continue
-
 def main():
     # TODO: Implement 'select a game to play' functionality.
-    card_game = CardGame(deck=deck_dict['major_arcana'])
+    if True:
+        card_game = RegexCardGame(deck=deck_dict['major_arcana'])
+    else:
+        card_game = MethodCardGame(deck=deck_dict['major_arcana'])
     si = SlackInterface(card_game)
     si.listen()
 
